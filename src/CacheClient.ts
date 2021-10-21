@@ -20,12 +20,12 @@ const KEY_QUEUE = "trackKeyList";
 
 class CacheClient {
   public redisClient: redis.Redis;
-  ttlSeconds: number;
+  defaultTtlSeconds: number;
   numberOfSlots: number;
   evictionPolicy: EvictionPolicy;
 
   constructor(cacheConfig: CacheConfig) {
-    this.ttlSeconds = cacheConfig.ttlSeconds ?? 3600;
+    this.defaultTtlSeconds = cacheConfig.ttlSeconds ?? 3600;
     this.numberOfSlots = cacheConfig.numberOfSlots ?? 10000;
     this.evictionPolicy = cacheConfig.evictionPolicy ?? EvictionPolicy.Reject;
     this.redisClient = new redis.default({
@@ -49,7 +49,7 @@ class CacheClient {
     return parseInt(numberOfKeys) - 1;
   };
 
-  private removeDroppedKeysFromQueue = async () => {
+  private removeDroppedKeysFromQueueLHS = async () => {
     // Batch through the tracking queue so we don't run out of memory
     const batchSize = 1000;
     for (let ii = 0; true; ii += batchSize) {
@@ -71,8 +71,26 @@ class CacheClient {
     }
   };
 
+  // Removes keys on the right side of queue which may have been deleted, or ttl dropped
+  //
+  private removeDroppedKeysFromQueueRHS = async () => {
+    // Batch through the tracking queue so we don't run out of memory
+    const batchSize = 1000;
+    let keyList = await this.redisClient.lrange(KEY_QUEUE, -batchSize, -1);
+    while (keyList.length) {
+      for (let jj = keyList.length - 1; jj >= 0; jj -= 1) {
+        if ((await this.redisClient.exists(keyList[jj])) === 0) {
+          await this.redisClient.rpop(KEY_QUEUE);
+          continue;
+        }
+        return;
+      }
+      keyList = await this.redisClient.lrange(KEY_QUEUE, -batchSize, -1);
+    }
+  };
+
   public async setup(cacheConfig: CacheConfig) {
-    this.ttlSeconds = cacheConfig.ttlSeconds ?? 3600;
+    this.defaultTtlSeconds = cacheConfig.ttlSeconds ?? 3600;
     this.numberOfSlots = cacheConfig.numberOfSlots ?? 10000;
     this.evictionPolicy = cacheConfig.evictionPolicy ?? EvictionPolicy.Reject;
     this.redisClient = new redis.default({
@@ -95,20 +113,21 @@ class CacheClient {
     if (numKeys >= this.numberOfSlots) {
       if (this.evictionPolicy === EvictionPolicy.OldestFirst) {
         //Remove TLS dropped items
-        this.removeDroppedKeysFromQueue();
+        await this.removeDroppedKeysFromQueueLHS();
         const oldestKey = await this.redisClient.lpop(KEY_QUEUE);
         this.redisClient.del(oldestKey);
       } else if (this.evictionPolicy === EvictionPolicy.NewestFirst) {
-        //Remove TLS dropped items, not essential for newest first
-        //but will free up memory
-        this.removeDroppedKeysFromQueue();
+        //Remove TLS dropped items, 
+        // LHS not essential for newest first but will free up memory
+        await this.removeDroppedKeysFromQueueLHS();
+        await this.removeDroppedKeysFromQueueRHS();
         const newestKey = await this.redisClient.rpop(KEY_QUEUE);
         this.redisClient.del(newestKey);
       } else if (this.evictionPolicy === EvictionPolicy.Reject) {
         throw new ApiError("NoStorageSpace", 507, "Object out of storage");
       }
     }
-    const itemTtl = ttl ?? this.ttlSeconds;
+    const itemTtl = ttl ?? this.defaultTtlSeconds;
     if (itemTtl) {
       this.redisClient.setex(key, itemTtl, JSON.stringify(body));
     } else {
@@ -124,6 +143,7 @@ class CacheClient {
     if (ret === 0) {
       throw new ApiError("ObjectNotFound", 404, "Object not found or expired");
     }
+    await this.redisClient.lrem(KEY_QUEUE, 0, key);
     return key;
   }
 }
