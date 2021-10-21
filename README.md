@@ -14,4 +14,7 @@ In a seperate terminal
 For running queiries against the API You can access the swagger page at
 http://localhost:3000/docs/
 
+# Configuring
 For configuring the Eviction Policy, TTL, Number of Keys, Host address, or Cache Port see the .env file. 
+
+Available eviction policies can be set to the following strings, "OldestFirst", "NewestFirst", "Reject"
