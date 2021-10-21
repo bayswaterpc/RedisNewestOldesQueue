@@ -1,7 +1,6 @@
 import * as redis from "ioredis";
 import { ApiError } from "./ApiError";
-
-//import { ErrorResponse } from
+import dotenv from "dotenv";
 
 export enum EvictionPolicy {
   OldestFirst = "OldestFirst",
@@ -20,20 +19,22 @@ export interface CacheConfig {
 const KEY_QUEUE = "trackKeyList";
 
 class CacheClient {
-  public redisClient?: redis.Redis;
-  ttlSeconds?: number;
-  numberOfSlots?: number;
-  evictionPolicy?: EvictionPolicy;
+  public redisClient: redis.Redis;
+  ttlSeconds: number;
+  numberOfSlots: number;
+  evictionPolicy: EvictionPolicy;
 
-  //"tracking_total_keys:"
+  constructor(cacheConfig: CacheConfig) {
+    this.ttlSeconds = cacheConfig.ttlSeconds ?? 3600;
+    this.numberOfSlots = cacheConfig.numberOfSlots ?? 10000;
+    this.evictionPolicy = cacheConfig.evictionPolicy ?? EvictionPolicy.Reject;
+    this.redisClient = new redis.default({
+      host: cacheConfig.host,
+      port: cacheConfig.port,
+    });
+  }
+
   private getRedisKeyCount = async () => {
-    if (this.redisClient === undefined) {
-      throw new ApiError(
-        "UninitializedClient",
-        500,
-        "Uninitialized Redis Client"
-      );
-    }
     const info = await this.redisClient.info("Keyspace");
     const infoVec = info.split("\n")[1].split(",");
     // Handling Edge case of initially is empty
@@ -42,20 +43,13 @@ class CacheClient {
     }
     const keyStr = "db0:keys=";
     const keyString = infoVec.filter((s) => s.includes(keyStr))[0];
-    
+
     const numberOfKeys = keyString.substring(keyStr.length);
     // Removing accounting for key list
     return parseInt(numberOfKeys) - 1;
   };
 
   private removeDroppedKeysFromQueue = async () => {
-    if (this.redisClient === undefined) {
-      throw new ApiError(
-        "UninitializedClient",
-        500,
-        "Uninitialized Redis Client"
-      );
-    }
     // Batch through the tracking queue so we don't run out of memory
     const batchSize = 1000;
     for (let ii = 0; true; ii += batchSize) {
@@ -88,9 +82,6 @@ class CacheClient {
   }
 
   public async get(key: string) {
-    if (this.redisClient === undefined) {
-      throw Error("Uninitialized redis client");
-    }
     const nullOrVal = await this.redisClient.get(key);
     if (nullOrVal == null) {
       throw new ApiError("ObjectNotFound", 404, "Object not found or expired");
@@ -99,17 +90,9 @@ class CacheClient {
   }
 
   public async put(key: string, body: object, ttl?: number) {
-    if (this.redisClient === undefined) {
-      throw new ApiError(
-        "UninitializedClient",
-        500,
-        "Uninitialized Redis Client"
-      );
-    }
-
     // Check if redis has space if does push, else go onto
     const numKeys = await this.getRedisKeyCount();
-    if (numKeys >= (this.numberOfSlots ?? 10000)) {
+    if (numKeys >= this.numberOfSlots) {
       if (this.evictionPolicy === EvictionPolicy.OldestFirst) {
         //Remove TLS dropped items
         this.removeDroppedKeysFromQueue();
@@ -125,7 +108,7 @@ class CacheClient {
         throw new ApiError("NoStorageSpace", 507, "Object out of storage");
       }
     }
-    const itemTtl = ttl ?? this.ttlSeconds ?? 3600;
+    const itemTtl = ttl ?? this.ttlSeconds;
     if (itemTtl) {
       this.redisClient.setex(key, itemTtl, JSON.stringify(body));
     } else {
@@ -137,14 +120,6 @@ class CacheClient {
   }
 
   public async delete(key: string) {
-    if (this.redisClient === undefined) {
-      throw new ApiError(
-        "UninitializedClient",
-        500,
-        "Uninitialized Redis Client"
-      );
-    }
-
     const ret = await this.redisClient.del(key);
     if (ret === 0) {
       throw new ApiError("ObjectNotFound", 404, "Object not found or expired");
@@ -153,4 +128,14 @@ class CacheClient {
   }
 }
 
-export default new CacheClient();
+dotenv.config();
+const { HOST, CACHE_PORT, NUMBER_OF_SLOTS, TTL_SECONDS, EVICTION_POLICY } =
+  process.env;
+
+export default new CacheClient({
+  host: HOST ?? "",
+  port: parseInt(CACHE_PORT as string, 10),
+  numberOfSlots: parseInt(NUMBER_OF_SLOTS as string, 10),
+  ttlSeconds: parseInt(TTL_SECONDS as string, 10),
+  evictionPolicy: <EvictionPolicy>EVICTION_POLICY,
+});

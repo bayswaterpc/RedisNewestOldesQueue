@@ -26,12 +26,10 @@ export class CacheController extends Controller {
   /**
    * Create key-value in Cache
    */
-  public async getObject(
-    @Path() key: string,
-  ): Promise<string> {
+  public async getObject(@Path() key: string): Promise<string> {
     const value = await CacheClient.get(key);
     if (!value) {
-      throw new ApiError("ObjectNotFound", 404, "Object not found or expired")
+      throw new ApiError("ObjectNotFound", 404, "Object not found or expired");
     }
     return value;
   }
@@ -45,7 +43,7 @@ export class CacheController extends Controller {
   public async putObject(
     @Path() key: string,
     @Body() input: CacheInput,
-    @Query() ttl?: number, 
+    @Query() ttl?: number
   ): Promise<any> {
     return await CacheClient.put(key, input.value, ttl);
   }
@@ -56,9 +54,7 @@ export class CacheController extends Controller {
   /**
    * Create key-value in Cache
    */
-  public async deleteObject(
-    @Path() key: any,
-  ): Promise<string> {
+  public async deleteObject(@Path() key: any): Promise<string> {
     return await CacheClient.delete(key);
   }
 }
